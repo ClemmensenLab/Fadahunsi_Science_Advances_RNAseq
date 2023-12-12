@@ -1,0 +1,263 @@
+---
+title: "Effect of PICK-1i (mPD5) and PSD-95i (UCCB01-147) treatment on the transcriptome in male mouse hypothalamus"
+author: 
+- "Analysis by Cecilie Vad Mathiesen"
+- "Research Assistant, Clemmensen Group, CBMR, UCPH"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: hide
+    df_print: paged
+editor_options:
+  chunk_output_type: inline
+---
+
+# Pre-processing code blocks 
+
+All code used for the analyses can be found throughout this report by expanding the code-blocks in the .html-file on the right-hand side within the appropriate tabs, or through the associated .Rmd file, where it can also be run. 
+
+## Setup
+```{r setup, warning=FALSE, message=FALSE, results="hide"}
+# Load the required libraries
+library(DESeq2)
+library(tidyverse)
+library(org.Mm.eg.db)
+library(ComplexHeatmap)
+library(clusterProfiler)
+library(SummarizedExperiment)
+library(gtools)
+theme_set(theme_bw())
+```
+
+## Load data
+```{r, message = FALSE, warning = FALSE, class.source = 'fold-show'}
+# Load gene counts
+g_counts_raw <- readRDS("/Users/hgx227/Library/CloudStorage/OneDrive-UniversityofCopenhagen/Københavns Universitet/CBMR/Experimental studies/PICK-1 PDS-95 RNAseq/RNAseq/Analysis/salmon.gene_counts_hypothalamus.rds")
+
+# Load meta data
+meta_data_sheet <- readxl::read_excel("/Users/hgx227/Library/CloudStorage/OneDrive-UniversityofCopenhagen/Københavns Universitet/CBMR/Experimental studies/PICK-1 PDS-95 RNAseq/RNAseq/Analysis/0184_metadata_hypothalamus.xlsx") %>% janitor::clean_names()
+meta_data_sheet$unique_id <- paste0('S', meta_data_sheet$subject_name_user_selected_id)
+
+# Clean up the count matrix
+rna_counts<- assay(g_counts_raw, 'counts') %>% 
+  setNames(sub(pattern = "X[0-9]{4}_", 
+               replacement = "S", 
+               x = names(.))) %>%  
+  setNames(sub(pattern = "_S[0-9]{1,2}", 
+               replacement = "",
+               x=names(.))) 
+
+rownames(meta_data_sheet) <- meta_data_sheet$unique_id
+
+rna_counts <- rna_counts %>% mutate_all(as.integer)
+```
+
+## Visualize metadata
+```{r, message = FALSE, class.source = 'fold-show'}
+meta_data_sheet
+```
+
+# Differential expression analysis
+
+## Run DESeq2
+```{r fig.width=5, fig.height=3}
+# Create DESeq object 
+dds <- DESeqDataSetFromMatrix(countData = rna_counts, colData = meta_data_sheet[match(colnames(rna_counts), rownames(meta_data_sheet)),], design = ~condition1+extraction_pool_a_b_c)
+dds <- dds[,!dds$unique_id%in%c('S4','S7')] #Exclude samples 4 and 7
+
+# Filter lowly expressed genes
+keep <- rowSums(counts(dds) >= 25) >= 5
+#table(keep)
+dds <- dds[keep,]
+
+# Run DESeq2
+dds <- DESeq(dds)
+vsd <- vst(dds, blind = F)
+
+# Create PCA plots
+plotPCA(vsd, intgroup = "condition1", ntop=500)
+plotPCA(vsd, intgroup = "extraction_pool_a_b_c", ntop=500)
+
+# Create heat plot
+plotDists = function (vsd.obj) {
+  sampleDists <- dist(t(assay(vsd.obj)))
+  sampleDistMatrix <- as.matrix( sampleDists )
+  rownames(sampleDistMatrix) <- paste( vsd.obj$Drug )
+  colors <- colorRampPalette( rev(RColorBrewer::brewer.pal(9, "Blues")) )(255)
+  pheatmap::pheatmap(sampleDistMatrix,
+           clustering_distance_rows = sampleDists,
+           clustering_distance_cols = sampleDists,
+           col = colors)
+}
+plotDists(vsd)
+```
+
+## Generate DESeq2 results for pairwise comparisons
+
+### PICK1i compared to vehicle 
+```{r, message=F, error=F, echo=F}
+# Generate DESeq2 results for comparison between PICK1i and vehicle group
+res_PICK <- 
+  results(dds, contrast = c("condition1", "PICK-1i", "Saline")) %>% 
+  data.frame() %>% 
+  rownames_to_column("ENSEMBL") %>% 
+  inner_join(
+    AnnotationDbi::select(x = org.Mm.eg.db, keys = .$ENSEMBL, columns = "SYMBOL", keytype = "ENSEMBL")
+  ) %>% 
+  arrange(log10(padj)) %>% 
+  mutate(comparison = "PICK_vs_saline")
+
+# Table of differentially expressed genes
+res_PICK
+
+# Export lists of differentially expressed genes
+res_PICK %>% 
+  write_csv("degenes_PICK1i_vs_saline_hypothalamus.csv")
+
+# Export lists of filtered differentially expressed genes for online GO-term analysis tools
+res_PICK %>% filter(pvalue<0.05 | abs(log2FoldChange) > 2) %>%
+  write_csv("degenes_PICK1i_vs_saline_hypothalamus_for_GO_analysis.csv")
+
+```
+
+```{r, results='hide'}
+# Check normalized gene count
+plotCounts(dds,gene =  'ENSMUSG00000056962', intgroup='condition1', transform = T)
+```
+
+### PSD95i compared to vehicle 
+```{r, message=F, error=F, echo=F}
+# Generate DESeq2 results for comparison between PSD95i and vehicle group
+res_PSD <- 
+  results(dds, contrast = c("condition1", "PSD-95", "Saline")) %>% 
+  data.frame() %>% 
+  rownames_to_column("ENSEMBL") %>% 
+  inner_join(
+    AnnotationDbi::select(x = org.Mm.eg.db, keys = .$ENSEMBL, columns = "SYMBOL", keytype = "ENSEMBL")
+  ) %>% 
+  arrange(log10(padj)) %>% 
+  mutate(comparison = "PSD_vs_saline")
+
+# Table of differentially expressed genes
+res_PSD
+
+# Export lists of differentially expressed genes
+res_PSD %>% 
+  write_csv("degenes_PSD95i_vs_saline_hypothalamus.csv")
+
+# Export lists of filtered differentially expressed genes for online GO-term analysis tools
+res_PSD %>% filter(pvalue<0.05 | abs(log2FoldChange) > 2) %>%
+  write_csv("degenes_PSD95i_vs_saline_hypothalamus_for_GO_analysis.csv")
+```
+
+
+### Volcano plots of differentially expressed genes
+```{r}
+# Create volcano plot for differentially expressed genes in PICK1i vs vehicle comparison
+vPICK <- 
+  res_PICK %>% 
+  filter(abs(log2FoldChange) < 2.5) %>% 
+  ggplot() +
+  aes(log2FoldChange, -log10(pvalue)) + 
+  geom_point(aes(fill = I(ifelse(padj < 0.05 & log2FoldChange > 0, "#d67e02", 
+                               ifelse(padj < 0.05 & log2FoldChange < 0, "orange", "grey")))),
+             shape = 21, size = 2, alpha = 0.9, stroke = 0) +
+  theme_classic() + 
+  ggrepel::geom_text_repel(aes(label = ifelse(padj < 0.01 & abs(log2FoldChange) > 0.4, SYMBOL, NA_character_)), max.overlaps = 10000) +
+  scale_size_identity() +
+  ggtitle("PICK1i vs Saline") + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  lims(x = c(-2, 2),y = c(0, 10))
+
+# Create volcano plot for differentially expressed genes in PSD95i vs vehicle comparison
+vPSD <- 
+  res_PSD %>% 
+  filter(abs(log2FoldChange) < 2.5) %>% 
+  ggplot() +
+  aes(log2FoldChange, -log10(pvalue)) + 
+  geom_point(aes(fill = I(ifelse(padj < 0.05 & log2FoldChange > 0, "darkblue", 
+                               ifelse(padj < 0.05 & log2FoldChange < 0, "#6176ff", "grey")))),
+             shape = 21, size = 2, stroke = 0) +
+  theme_classic() + 
+  ggrepel::geom_text_repel(aes(label = ifelse(padj < 0.01 & abs(log2FoldChange) > 0.5, SYMBOL, NA_character_)), max.overlaps = 1000) +
+  scale_size_identity() +
+  ggtitle("PSD95i vs Saline") + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  lims(x = c(-2, 2), y = c(0, 10)) 
+```
+
+```{r, warning=F, fig.width=8, fig.height=4}
+# Visualize the volcano plots
+vPICK+vPSD
+```
+
+# Gene set enrichment analysis
+
+## Run GSEA to identify enriched pathways in PICK1i vs. saline
+```{r, warning=F, fig.width=12, fig.height=10}
+# Rank gene list based on adjusted P-value and log2FoldChange
+res_PICK_gsea <- res_PICK %>% 
+  arrange(log10(padj)*log2FoldChange)
+
+# Extract the gene list and associate names with ENSEMBL IDs
+genelist_PICK <- res_PICK_gsea$stat[!is.na(res_PICK_gsea$padj)]
+names(genelist_PICK) <- res_PICK_gsea$ENSEMBL[!is.na(res_PICK_gsea$padj)]
+genelist_PICK <- genelist_PICK[!is.na(genelist_PICK)]
+genelist_PICK <- sort(genelist_PICK, decreasing = T)
+
+# Perform Gene Set Enrichment Analysis (GSEA) using the extracted gene list
+egobp <- gseGO(geneList     = genelist_PICK,
+              OrgDb        = org.Mm.eg.db,
+              ont          = "ALL",
+              keyType      = "ENSEMBL", 
+              minGSSize    = 10,
+              maxGSSize    = 300,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+res_PICK <- 
+  egobp@result %>% 
+  mutate(dir = sign(NES))
+
+# Display the results
+res_PICK %>% as.data.frame()
+
+# Write the GSEA results to a CSV file
+res_PICK %>% write_csv("gsea_goterms_PICK1i_vs_saline_hypothalamus.csv")
+```
+
+## Run GSEA to identify enriched pathways in PSD95i vs saline
+```{r}
+# Rank gene list based on adjusted P-value and log2FoldChange
+res_PSD_gsea <- res_PSD %>% 
+  arrange(log10(padj)*log2FoldChange)
+
+# Extract the gene list and associate names with ENSEMBL IDs
+genelist_PSD <- res_PSD_gsea$stat
+names(genelist_PSD) <- res_PSD_gsea$ENSEMBL[!is.na(res_PSD_gsea$padj)]
+genelist_PSD <- genelist_PSD[!is.na(genelist_PSD)]
+genelist_PSD <- sort(genelist_PSD, decreasing = T)
+
+# Perform Gene Set Enrichment Analysis (GSEA) using the extracted gene list
+egobp_PSD <- gseGO(geneList     = genelist_PSD,
+              OrgDb        = org.Mm.eg.db,
+              ont          = "ALL",
+              keyType      = "ENSEMBL", 
+              minGSSize    = 10,
+              maxGSSize    = 300,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+res_PSD <- 
+  egobp_PSD@result %>% 
+  mutate(dir = sign(NES)) 
+
+# Display the results
+res_PSD
+
+# Write the GSEA results to a CSV file
+res_PSD %>% write_csv("gsea_goterms_PSD95i_vs_saline_hypothalamus.csv")
+```
